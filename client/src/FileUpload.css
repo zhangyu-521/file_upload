@@ -1,0 +1,22 @@
+.upload-container {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 200px;
+  border: 1px dashed #ccc;
+  width: 100%;
+}
+
+.upload-container:hover {
+  cursor: pointer;
+}
+
+.upload-container span {
+  font-size: 60px;
+}
+
+.upload-container video,
+.upload-container img {
+  max-width: 100%;
+  max-height: 100%;
+}
