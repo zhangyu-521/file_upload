@@ -65,6 +65,6 @@ export default function useDrag(uploadContainerRef) {
 
   return {
     filePreview,
-    SelectFile,
+    selectFile: SelectFile,
   };
 }
