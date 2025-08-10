@@ -63,8 +63,14 @@ export default function useDrag(uploadContainerRef) {
     };
   }, []);
 
+  const resetFileStatus = () => {
+    setFilePreview({ url: null, type: null });
+    setSelectFile(null);
+  };
+
   return {
     filePreview,
     selectFile: SelectFile,
+    resetFileStatus,
   };
 }

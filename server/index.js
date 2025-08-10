@@ -29,9 +29,12 @@ app.post('/upload/:fileName', async (req, res, next) => {
   // 分片路径
   const chunkFilePath = path.resolve(chunkDir, chunkFileName);
 
+  const start = isNaN(req.query.start) ? 0 : parseInt(req.query.start, 10);
+
   await fs.ensureDir(chunkDir);
 
-  const ws = fs.createWriteStream(chunkFilePath, {});
+  // 创建可写流可以给定起始位置， a是已追加模式打开i文件，文件不存在就创建文件
+  const ws = fs.createWriteStream(chunkFilePath, { start, flags: 'a' });
   // 客户端取消上传触发
   req.on('aborted', () => {
     ws.close();
@@ -54,6 +57,28 @@ app.get('/merge/:fileName', async (req, res, next) => {
   } catch (error) {
     next(error);
   }
+});
+
+app.get('/verify/:fileName', async (req, res, next) => {
+  const { fileName } = req.params;
+  const filePath = path.resolve(PUBLIC_DIR, fileName);
+  const isExist = await fs.pathExists(filePath);
+  if (isExist) {
+    return res.json({ success: true, needUpload: false });
+  }
+  const chunkDir = path.resolve(TEMP_DIR, fileName);
+  const exist = await fs.pathExists(chunkDir);
+  let uploadList = [];
+  if (exist) {
+    const chunkFiles = await fs.readdir(chunkDir);
+    uploadList = await Promise.all(
+      chunkFiles.map(async function (chunkFile) {
+        const { size } = await fs.stat(path.resolve(chunkDir, chunkFile));
+        return { chunkFile, size };
+      })
+    );
+  }
+  return res.json({ success: true, needUpload: true, uploadList });
 });
 
 app.listen(3000, () => {

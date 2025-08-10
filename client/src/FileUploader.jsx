@@ -5,23 +5,58 @@ import './FileUpload.css';
 import useDrag from './useDrag';
 import { getChunkSize } from './constant';
 import axiosInstance from './axiosInstance';
+import axios from 'axios';
+
+const UploadStatus = {
+  NOT_STARTED: 'NOT_STARTED', // 初始状态
+  UPLOADING: 'UPLOADING', // 上传中
+  PAUSED: 'PAUSED', // 暂停
+  COMPLETED: 'COMPLETED', // 已完成
+};
 export default function FileUploader() {
   const uploadContainerRef = useRef(null);
-  const { selectFile, filePreview } = useDrag(uploadContainerRef);
+  const { selectFile, filePreview, resetFileStatus } =
+    useDrag(uploadContainerRef);
   let [uploadProgress, setUploadProgress] = useState({});
+  const [uploadStatus, setUploadStatus] = useState(UploadStatus.NOT_STARTED);
+  const [cancelTokens, setCancelTokens] = useState([]);
+  const resetAllStatus = () => {
+    resetFileStatus();
+    setUploadProgress({});
+    setUploadStatus(UploadStatus.NOT_STARTED);
+  };
   const handleUpload = async () => {
     if (!selectFile) {
       message.error('没有选择文件');
       return;
     }
+    setUploadStatus(UploadStatus.UPLOADING);
 
     const fileName = await getFileName(selectFile);
     console.log('fileName', fileName);
 
-    await uploadFile(selectFile, fileName, setUploadProgress);
+    await uploadFile(
+      selectFile,
+      fileName,
+      setUploadProgress,
+      resetAllStatus,
+      setCancelTokens
+    );
+  };
+
+  const handlePause = async () => {
+    setUploadStatus(UploadStatus.PAUSED);
+    cancelTokens.forEach((cancelToken) => cancelToken.cancel('用户主动暂停'));
   };
   const renderButton = () => {
-    return <Button onClick={handleUpload}>上传</Button>;
+    switch (uploadStatus) {
+      case UploadStatus.NOT_STARTED:
+        return <Button onClick={handleUpload}>上传</Button>;
+      case UploadStatus.UPLOADING:
+        return <Button onClick={handlePause}>暂停</Button>;
+      case UploadStatus.PAUSED:
+        return <Button onClick={handleUpload}>恢复</Button>;
+    }
   };
   return (
     <>
@@ -48,37 +83,93 @@ export default function FileUploader() {
  * @param {*} file
  * @param {*} fileName
  */
-async function uploadFile(file, fileName, setUploadProgress) {
+async function uploadFile(
+  file,
+  fileName,
+  setUploadProgress,
+  resetAllStatus,
+  setCancelTokens
+) {
+  const { needUpload, uploadList } = await axiosInstance.get(
+    `/verify/${fileName}`
+  );
+  if (!needUpload) {
+    message.success('文件已存在，秒传成功');
+    return resetAllStatus();
+  }
   // 切片
   const chunks = createFileChunks(file, fileName);
-  console.log(chunks);
+
+  const newCancelTokens = [];
 
   // 并行上传
-  const requests = chunks.map(({ chunk, chunkFileName }) => {
-    return createRequest(fileName, chunk, chunkFileName, setUploadProgress);
-  });
+  const requests = chunks.map(({ chunk, chunkFileName }, index) => {
+    const cancelToken = axios.CancelToken.source();
+    newCancelTokens.push(cancelToken);
 
+    // 断点续传
+    const existingChunk = uploadList.find(({ chunkFile, size }) => {
+      return chunkFile === chunkFileName;
+    });
+    // 服务器已经上传一部分了
+    if (existingChunk) {
+      const uploadedSize = existingChunk.sieze;
+      const remainingChunk = chunk.slice(uploadedSize);
+      if (remainingChunk.size === 0) {
+        return Promise.resolve();
+      }
+      return createRequest(
+        fileName,
+        remainingChunk,
+        chunkFileName,
+        setUploadProgress,
+        cancelToken,
+        uploadedSize //上传位置起始字节
+      );
+    } else {
+      return createRequest(
+        fileName,
+        chunk,
+        chunkFileName,
+        setUploadProgress,
+        cancelToken,
+        0
+      );
+    }
+  });
+  setCancelTokens(newCancelTokens);
   try {
     // 并行上传
     await Promise.all(requests);
     // 合并请求
     await axiosInstance.get(`/merge/${fileName}`);
     message.success('文件上传完成!');
+    resetAllStatus();
   } catch (error) {
-    console.error(error);
-    message.error('文件上传失败!');
+    if (axios.isCancel(error)) {
+      message.info('上传已暂停');
+    } else {
+      console.error(error);
+      message.error('文件上传失败!');
+    }
   }
 }
 
-function createRequest(fileName, chunk, chunkFileName, setUploadProgress) {
-  console.log(`🚀 Starting upload: ${chunkFileName} (${chunk.size} bytes)`);
-
+function createRequest(
+  fileName,
+  chunk,
+  chunkFileName,
+  setUploadProgress,
+  cancelToken,
+  start
+) {
   return axiosInstance.post(`/upload/${fileName}`, chunk, {
     headers: {
       'Content-Type': 'application/octet-stream',
     },
     params: {
       chunkFileName,
+      start, // 将文件的起始位置也送给服务器，方便断点续传
     },
     onUploadProgress: (progressEvent) => {
       const percentage = Math.round(
@@ -89,6 +180,7 @@ function createRequest(fileName, chunk, chunkFileName, setUploadProgress) {
         [chunkFileName]: percentage,
       }));
     },
+    cancelToken: cancelToken.token,
   });
 }
 
