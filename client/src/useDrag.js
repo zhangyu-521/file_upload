@@ -63,6 +63,21 @@ export default function useDrag(uploadContainerRef) {
     };
   }, []);
 
+  // 点击上传
+  useEffect(() => {
+    const uploadContainer = uploadContainerRef.current;
+    uploadContainer.addEventListener('click', () => {
+      const fileinput = document.createElement('input');
+      fileinput.type = 'file';
+      fileinput.style.display = 'none';
+      document.body.appendChild(fileinput);
+      fileinput.click();
+      fileinput.onchange = (event) => {
+        checkFile(event.target.files);
+      };
+    });
+  }, []);
+
   const resetFileStatus = () => {
     setFilePreview({ url: null, type: null });
     setSelectFile(null);

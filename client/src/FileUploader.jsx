@@ -1,9 +1,9 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { InboxOutlined } from '@ant-design/icons';
-import { Button, message, Progress } from 'antd';
+import { Button, message, Progress, Spin } from 'antd';
 import './FileUpload.css';
 import useDrag from './useDrag';
-import { getChunkSize } from './constant';
+import { getChunkSize, MAX_RETRY } from './constant';
 import axiosInstance from './axiosInstance';
 import axios from 'axios';
 
@@ -20,6 +20,12 @@ export default function FileUploader() {
   let [uploadProgress, setUploadProgress] = useState({});
   const [uploadStatus, setUploadStatus] = useState(UploadStatus.NOT_STARTED);
   const [cancelTokens, setCancelTokens] = useState([]);
+  const [filenamWorker, setFilenameWorker] = useState(null);
+  const [isCalculatingFileName, setIsCalculatingFileName] = useState(false);
+  useEffect(() => {
+    const filenameWorker = new Worker('/filenameWorker.js');
+    setFilenameWorker(filenameWorker);
+  }, []);
   const resetAllStatus = () => {
     resetFileStatus();
     setUploadProgress({});
@@ -31,17 +37,22 @@ export default function FileUploader() {
       return;
     }
     setUploadStatus(UploadStatus.UPLOADING);
+    // 向webworker发送消息， 计算文件名
+    filenamWorker.postMessage(selectFile);
+    setIsCalculatingFileName(true);
+    // 监听接受消息
 
-    const fileName = await getFileName(selectFile);
-    console.log('fileName', fileName);
-
-    await uploadFile(
-      selectFile,
-      fileName,
-      setUploadProgress,
-      resetAllStatus,
-      setCancelTokens
-    );
+    filenamWorker.onmessage = async (event) => {
+      console.log(event);
+      setIsCalculatingFileName(false);
+      await uploadFile(
+        selectFile,
+        event.data,
+        setUploadProgress,
+        resetAllStatus,
+        setCancelTokens
+      );
+    };
   };
 
   const handlePause = async () => {
@@ -64,10 +75,11 @@ export default function FileUploader() {
         {renderFilePreview(filePreview)}
       </div>
       <div>{renderButton()}</div>
+      <div>{isCalculatingFileName && <Spin></Spin>}</div>
       <div>
         {Object.entries(uploadProgress).map(
           ([chunkFileName, percentage], index) => (
-            <div>
+            <div key={chunkFileName}>
               <span>切片{index}</span>:
               <Progress percent={percentage} style={{ marginBottom: 10 }} />
             </div>
@@ -88,7 +100,8 @@ async function uploadFile(
   fileName,
   setUploadProgress,
   resetAllStatus,
-  setCancelTokens
+  setCancelTokens,
+  retryCount = 0
 ) {
   const { needUpload, uploadList } = await axiosInstance.get(
     `/verify/${fileName}`
@@ -113,11 +126,19 @@ async function uploadFile(
     });
     // 服务器已经上传一部分了
     if (existingChunk) {
-      const uploadedSize = existingChunk.sieze;
+      const uploadedSize = existingChunk.size;
       const remainingChunk = chunk.slice(uploadedSize);
       if (remainingChunk.size === 0) {
+        setUploadProgress((prev) => ({
+          ...prev,
+          [chunkFileName]: 100,
+        }));
         return Promise.resolve();
       }
+      setUploadProgress((prev) => ({
+        ...prev,
+        [chunkFileName]: Math.round((uploadedSize * 100) / chunk.size),
+      }));
       return createRequest(
         fileName,
         remainingChunk,
@@ -149,8 +170,20 @@ async function uploadFile(
     if (axios.isCancel(error)) {
       message.info('上传已暂停');
     } else {
-      console.error(error);
-      message.error('文件上传失败!');
+      if (retryCount < MAX_RETRY) {
+        console.log('重试中。。。');
+        uploadFile(
+          file,
+          fileName,
+          setUploadProgress,
+          resetAllStatus,
+          setCancelTokens,
+          retryCount + 1
+        );
+      } else {
+        console.error(error);
+        message.error('文件上传失败!');
+      }
     }
   }
 }
@@ -173,7 +206,7 @@ function createRequest(
     },
     onUploadProgress: (progressEvent) => {
       const percentage = Math.round(
-        (progressEvent.loaded * 100) / progressEvent.total
+        ((progressEvent.loaded + start) * 100) / progressEvent.total
       );
       setUploadProgress((prev) => ({
         ...prev,
@@ -189,36 +222,11 @@ function createFileChunks(file, fileName) {
   const chunkSize = getChunkSize(file.type);
   let count = Math.ceil(file.size / chunkSize);
 
-  console.log(
-    `File type: ${file.type}, Chunk size: ${
-      chunkSize / 1024 / 1024
-    }MB, Total chunks: ${count}`
-  );
-
   for (let i = 0; i < count; i++) {
     let chunk = file.slice(i * chunkSize, (i + 1) * chunkSize);
     chunks.push({ chunk, chunkFileName: `${fileName}-${i}` });
   }
   return chunks;
-}
-
-async function getFileName(file) {
-  // 计算hash
-  const fileHash = await calculateFileHash(file);
-  const fileExtension = file.name.split('.').pop();
-  return `${fileHash}.${fileExtension}`;
-}
-
-async function calculateFileHash(file) {
-  const arrayBuffer = await file.arrayBuffer();
-  const hash = await crypto.subtle.digest('SHA-256', arrayBuffer);
-  return bufferToHex(hash);
-}
-
-function bufferToHex(buffer) {
-  return Array.from(new Uint8Array(buffer))
-    .map((b) => b.toString(16).padStart(2, '0'))
-    .join('');
 }
 
 function renderFilePreview(filePreview) {

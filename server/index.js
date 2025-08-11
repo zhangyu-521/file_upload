@@ -115,6 +115,19 @@ async function mergeFileChunk(fileName, next) {
     // 并发把分片写入到目标文件
     await Promise.all(pipes);
     await fs.rm(chunkDir, { recursive: true });
+    // 合并后文件完整性校验
+    const hash = crypto.createHash('SHA256');
+    const stream = fs.createReadStream(mergedFilePath);
+    stream.on('data', (data) => {
+      hash.update(data);
+    });
+
+    stream.on('end', (data) => {
+      const hashValue = hash.digest('hex');
+      console.log(hashValue);
+    });
+
+    return hax;
   } catch (error) {
     next(error);
   }
